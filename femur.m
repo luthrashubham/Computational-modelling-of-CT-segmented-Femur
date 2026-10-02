@@ -2,12 +2,8 @@
 % Requires: Image Processing Toolbox
 % Inputs (based on your saved files):
 %   1. 'S192803_CT_Scan cropped.nrrd'          - the original CT volume
-%   2. 'Segmentation-Segment_1-label.nrrd'      - your femur binary labelmap
-%
-% NOTE: MATLAB does not have a universal built-in NRRD reader across all
-% versions, so a local nrrdread() function is included at the bottom of
-% this file - no extra download needed.
-
+%   2. 'Segmentation-Segment_1-label.nrrd'      -femur binary labelmap
+% The segmentation of femur is done using 3D slicer.
 clear; clc; close all;
 
 %% ---- 1. SET YOUR PATHS HERE ----
@@ -19,13 +15,6 @@ maskPath = 'E:/bone segmentation/segmentation results/Segmentation_1.nrrd';
 ctVolume = double(ctVolume);
 
 % --- HU CALIBRATION FIX ---
-% Sanity checks (soft-tissue voxels reading ~1066-1117 instead of the
-% expected ~0-100) showed this data is missing the standard DICOM
-% RescaleIntercept correction, commonly -1024. Applying it here shifts
-% raw scanner values onto the real Hounsfield scale (air=-1000, water=0).
-% NOTE: this is an INFERRED correction from internal consistency checks,
-% not one confirmed from original scanner metadata - state this plainly
-% as a methodological assumption in your report.
 HU_OFFSET = -1024;
 ctVolume = ctVolume + HU_OFFSET;
 fprintf('Applied HU calibration offset: %d\n', HU_OFFSET);
@@ -38,7 +27,7 @@ spacing = getNrrdSpacing(ctMeta);   % [sx sy sz] in mm
 fprintf('Voxel spacing (mm): %.3f x %.3f x %.3f\n', spacing(1), spacing(2), spacing(3));
 
 %% ---- 3. LOAD FEMUR LABELMAP (NRRD) ----
-[maskRaw, maskMeta] = nrrdread(maskPath); %#ok<ASGLU>
+[maskRaw, maskMeta] = nrrdread(maskPath); 
 
 % --- DIAGNOSTIC: check what's actually in the raw mask data before thresholding ---
 fprintf('\n--- Mask Diagnostic ---\n');
@@ -81,14 +70,7 @@ if isfield(ctMeta,'space_origin') && isfield(maskMeta,'space_origin')
     end
 end
 
-% --- HU CALIBRATION NOTE ---
-% NRRD does not carry DICOM RescaleSlope/RescaleIntercept tags. If this
-% file was exported from Slicer after loading DICOM, Slicer typically
-% already bakes the rescale into the voxel values (so raw NRRD values
-% ARE true HU). But this is an assumption, not a guarantee - if your
-% source wasn't DICOM, or a custom import path was used, verify against
-% a known landmark (e.g. air outside the body should read ~-1000 HU,
-% water/soft tissue ~0-100 HU) before treating these as calibrated HU.
+
 if min(ctVolume(:)) >= 0
     fprintf('\nNOTE: CT min value is %.0f (not negative). True calibrated HU air is ~-1000.\n', min(ctVolume(:)));
     fprintf('This suggests either: (a) your crop excluded all air/background, or (b) values are offset/uncalibrated.\n');
@@ -160,10 +142,6 @@ for i = 1:size(bands,1)
 end
 
 % --- SPATIAL LOCALIZATION OF HIGH-HU VOXELS (investigate the >2000 HU peak) ---
-% Find where in the volume these high-density voxels actually sit, so we
-% can tell if it's real dense cortical bone (should cluster at the outer
-% shell/mid-shaft), a segmentation leak (would show at mask edges/outside
-% expected bone shape), or scattered noise (would be randomly distributed).
 highHU_mask = femurCropped > 2000;
 if nnz(highHU_mask) > 0
     [ri, ci, zi] = ind2sub(size(femurCropped), find(highHU_mask));
@@ -208,20 +186,8 @@ title('Femur Cross-Sectional Area Profile');
 grid on;
 
 %% ---- 8b. ANATOMICAL REGIONAL BREAKDOWN ----
-% Orientation established from NRRD header: 'space directions' has a
-% POSITIVE Z-spacing (0,0,0.6) under 'left-posterior-superior' (LPS)
-% convention, meaning increasing slice index = increasing SUPERIOR
-% direction = toward the femoral head. So:
-%   low slice index  (position ~0mm)   = condyles (distal/inferior)
-%   high slice index (position ~max mm) = femoral head/neck (proximal/superior)
-%
-% If your bone renders upside-down relative to this in Slicer, set
-% FLIP_ORIENTATION = true below to reverse the region assignment.
+
 FLIP_ORIENTATION = false;
- 
-% Region boundaries as fraction of total bone length (adjust if you want
-% to match specific anatomical landmarks visible in your cross-sectional
-% area plot instead of even percentage splits)
 regionBoundaryFrac = [0 0.10 0.25 0.75 0.90 1.0];
 regionNames = {'Condyles (distal)', 'Distal metaphysis', 'Midshaft', ...
                 'Proximal metaphysis', 'Femoral head/neck (proximal)'};
@@ -369,8 +335,7 @@ end
 
 function out = gunzipBytes(bytes)
 % Decompress gzip byte stream using MATLAB's built-in gunzip (file-based).
-% More reliable for large files than manual Java streaming, which can
-% silently truncate/fail on large buffers depending on JVM heap settings.
+
     tmpGzFile = [tempname, '.gz'];
     fid = fopen(tmpGzFile, 'wb');
     fwrite(fid, bytes, 'uint8');
@@ -389,8 +354,6 @@ end
 
 function spacing = getNrrdSpacing(meta)
 % Extract per-axis voxel spacing (mm) from NRRD header metadata
-% Field names get 'space'->'_' substitution applied during header parsing,
-% so check both underscored and concatenated variants to be safe.
     if isfield(meta, 'spacings')
         vals = sscanf(meta.spacings, '%f');
         spacing = vals(:)';
@@ -405,12 +368,10 @@ function spacing = getNrrdSpacing(meta)
 end
 
 function spacing = spacingFromDirections(str)
-% Format like: (1,0,0) (0,1,0) (0,0,1) or "none (1,0,0) (0,1,0) (0,0,1)"
-% (leading "none" appears when an extra non-spatial axis is present)
     nums = regexp(str, '[-\d\.]+', 'match');
     nums = str2double(nums);
-    nums = nums(~isnan(nums));   % drop anything that wasn't actually numeric
-    nums = nums(1:9);            % keep only the 3x3 spatial part if extra values present
+    nums = nums(~isnan(nums));   
+    nums = nums(1:9);            
     M = reshape(nums, 3, 3)';
     spacing = sqrt(sum(M.^2, 2))';
 end
